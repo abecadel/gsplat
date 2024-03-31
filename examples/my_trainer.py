@@ -20,10 +20,15 @@ class SimpleTrainer:
     def __init__(
         self,
         gt_image: Tensor,
+        mask_image: Tensor,
         num_points: int = 2000,
     ):
         self.device = torch.device("cuda:0")
         self.gt_image = gt_image.to(device=self.device)
+        self.mask_image = mask_image.to(device=self.device)
+        self.mask = mask_image[:, :, 1] == True
+
+        self.background_image = torch.zeros_like(mask_image).to(device=self.device)
         self.num_points = num_points
 
         fov_x = math.pi / 2.0
@@ -38,13 +43,25 @@ class SimpleTrainer:
         bd = 2
 
         self.means = bd * (torch.rand(self.num_points, 3, device=self.device) - 0.5)
+        # self.means[:, 0] = torch.FloatTensor(self.num_points).uniform_(-1.0, -0.5) - 2.0
+        # self.means[:, 0] = torch.ones(self.num_points) * -10.0
+        # self.means[:, 1] = torch.FloatTensor(self.num_points).uniform_(0.0, 0.1)
+        # self.means[:, 2] = torch.ones(self.num_points) + 0.5
+        # self.means[:, 2] = torch.FloatTensor(self.num_points).uniform_(0.9, 1.0)
+
+        # TODO: remove not in mask
+
         self.scales = torch.rand(self.num_points, 3, device=self.device)
+        self.scales = torch.ones(self.num_points, 3, device=self.device)
         d = 3
         self.rgbs = torch.rand(self.num_points, d, device=self.device)
 
         u = torch.rand(self.num_points, 1, device=self.device)
         v = torch.rand(self.num_points, 1, device=self.device)
         w = torch.rand(self.num_points, 1, device=self.device)
+        # u = torch.ones(self.num_points, 1, device=self.device) - 1.0
+        # v = torch.ones(self.num_points, 1, device=self.device) - 1.0
+        # w = torch.ones(self.num_points, 1, device=self.device) - 1.0
 
         self.quats = torch.cat(
             [
@@ -81,12 +98,15 @@ class SimpleTrainer:
         lr: float = 0.01,
         save_imgs: bool = False,
         B_SIZE: int = 14,
+        debug: bool = False,
     ):
         optimizer = optim.Adam(
             [self.rgbs, self.means, self.scales, self.opacities, self.quats], lr
         )
         mse_loss = torch.nn.MSELoss()
         frames = []
+        frames_points_frames = []
+        mask_intersection_frames = []
         times = [0] * 3  # project, rasterize, backward
         B_SIZE = 16
 
@@ -134,20 +154,51 @@ class SimpleTrainer:
             torch.cuda.synchronize()
             times[1] += time.time() - start
             loss = mse_loss(out_img, self.gt_image)
+
+            mask_intersection = out_img.clone()
+            mask_intersection[self.mask] = 255  # hardcoded background
+            mask_loss = mse_loss(mask_intersection, self.background_image)
+
+
             optimizer.zero_grad()
             start = time.time()
-            loss.backward()
+            # loss = (loss + mask_loss * 0.00011)/1.0  # parametrize mask strength
+            # loss += mask_loss * 0.00001
+            # loss.backward()
+            mask_loss += loss
+            mask_loss.backward()
             torch.cuda.synchronize()
             times[2] += time.time() - start
             optimizer.step()
             loss_val = loss.item()
             pbar.set_description(f"Loss: {loss_val:.8f}")
 
-            if save_imgs and iter % 100 == 0:
+            if debug or (save_imgs and iter % 100 == 0):
+                gaussian_points = xys.detach().cpu().numpy().astype(np.uint8)
                 frame = (out_img.detach().cpu().numpy() * 255).astype(np.uint8)
+                frame[gaussian_points[:, 0], gaussian_points[:, 1]] = [255, 0, 0]
                 frames.append(frame)
                 out_dir = os.path.join(os.getcwd(), "renders")
                 Image.fromarray(frame).save(f"{out_dir}/{iter}.jpeg")
+
+                # save gaussian positions
+                gaussian_points_arr = np.ones_like(frame) * 255
+                gaussian_points_arr[gaussian_points[:, 0], gaussian_points[:, 1]] = [
+                    255,
+                    0,
+                    0,
+                ]
+                frames_points_frames.append(gaussian_points_arr)
+                Image.fromarray(gaussian_points_arr).save(
+                    f"{out_dir}/{iter}-gaussian-points.jpeg"
+                )
+
+                # mask intersection
+                mask_intersection_frame = (mask_intersection.detach().cpu().numpy() * 255).astype(np.uint8)
+                mask_intersection_frame[gaussian_points[:, 0], gaussian_points[:, 1]] = [255, 0, 0]
+                mask_intersection_frames.append(mask_intersection_frame)
+                out_dir = os.path.join(os.getcwd(), "renders")
+                Image.fromarray(mask_intersection_frame).save(f"{out_dir}/{iter}-mask-intersection.jpeg")
 
         if save_imgs:
             # save them as a gif with PIL
@@ -158,6 +209,32 @@ class SimpleTrainer:
                 f"{out_dir}/training.gif",
                 save_all=True,
                 append_images=frames[1:],
+                optimize=False,
+                duration=5,
+                loop=0,
+            )
+
+            # save points them as a gif with PIL
+            frames_points_frames = [Image.fromarray(frame) for frame in frames_points_frames]
+            out_dir = os.path.join(os.getcwd(), "renders")
+            os.makedirs(out_dir, exist_ok=True)
+            frames_points_frames[0].save(
+                f"{out_dir}/training-points.gif",
+                save_all=True,
+                append_images=frames_points_frames[1:],
+                optimize=False,
+                duration=5,
+                loop=0,
+            )
+
+            # save mask intersections as a gif with PIL
+            mask_intersection_frames = [Image.fromarray(frame) for frame in mask_intersection_frames]
+            out_dir = os.path.join(os.getcwd(), "renders")
+            os.makedirs(out_dir, exist_ok=True)
+            mask_intersection_frames[0].save(
+                f"{out_dir}/training-mask-intersection.gif",
+                save_all=True,
+                append_images=mask_intersection_frames[1:],
                 optimize=False,
                 duration=5,
                 loop=0,
@@ -185,8 +262,10 @@ def main(
     num_points: int = 100000,
     save_imgs: bool = True,
     img_path: Optional[Path] = None,
+    mask_path: Optional[Path] = None,
     iterations: int = 1000,
     lr: float = 0.01,
+    debug: bool = False,
 ) -> None:
     if img_path:
         gt_image = image_path_to_tensor(img_path)
@@ -196,12 +275,15 @@ def main(
         gt_image[: height // 2, : width // 2, :] = torch.tensor([1.0, 0.0, 0.0])
         gt_image[height // 2 :, width // 2 :, :] = torch.tensor([0.0, 0.0, 1.0])
 
-    trainer = SimpleTrainer(gt_image=gt_image, num_points=num_points)
-    trainer.train(
-        iterations=iterations,
-        lr=lr,
-        save_imgs=save_imgs,
+    if mask_path:
+        mask_image = image_path_to_tensor(mask_path)
+    else:
+        mask_image = torch.ones((height, width, 3)) * 1.0
+
+    trainer = SimpleTrainer(
+        gt_image=gt_image, mask_image=mask_image, num_points=num_points
     )
+    trainer.train(iterations=iterations, lr=lr, save_imgs=save_imgs, debug=debug)
 
 
 if __name__ == "__main__":
