@@ -99,6 +99,7 @@ class SimpleTrainer:
         save_imgs: bool = False,
         B_SIZE: int = 14,
         debug: bool = False,
+        mask_penalty: float = 1.0
     ):
         optimizer = optim.Adam(
             [self.rgbs, self.means, self.scales, self.opacities, self.quats], lr
@@ -153,25 +154,21 @@ class SimpleTrainer:
             )[..., :3]
             torch.cuda.synchronize()
             times[1] += time.time() - start
-            loss = mse_loss(out_img, self.gt_image)
+            image_loss = mse_loss(out_img, self.gt_image)
 
             mask_intersection = out_img.clone()
-            mask_intersection[self.mask] = 255  # hardcoded background
-            mask_loss = mse_loss(mask_intersection, self.background_image)
+            mask_intersection[self.mask] = 0  # hardcoded background
+            mask_loss = mse_loss(mask_intersection, self.background_image) * mask_penalty
 
 
             optimizer.zero_grad()
             start = time.time()
-            # loss = (loss + mask_loss * 0.00011)/1.0  # parametrize mask strength
-            # loss += mask_loss * 0.00001
-            # loss.backward()
-            mask_loss += loss
-            mask_loss.backward()
+            loss = image_loss + mask_loss
+            loss.backward()
             torch.cuda.synchronize()
             times[2] += time.time() - start
             optimizer.step()
-            loss_val = loss.item()
-            pbar.set_description(f"Loss: {loss_val:.8f}")
+            pbar.set_description(f"Loss: {image_loss.item():.8f} Mask loss: {mask_loss.item():.8f} Total loss: {loss.item():.8f}")
 
             if debug or (save_imgs and iter % 100 == 0):
                 gaussian_points = xys.detach().cpu().numpy().astype(np.uint8)
@@ -199,6 +196,10 @@ class SimpleTrainer:
                 mask_intersection_frames.append(mask_intersection_frame)
                 out_dir = os.path.join(os.getcwd(), "renders")
                 Image.fromarray(mask_intersection_frame).save(f"{out_dir}/{iter}-mask-intersection.jpeg")
+
+                # background
+                background = (self.background_image.detach().cpu().numpy() * 255).astype(np.uint8)
+                Image.fromarray(background).save(f"{out_dir}/{iter}-mask-background.jpeg")
 
         if save_imgs:
             # save them as a gif with PIL
@@ -266,6 +267,7 @@ def main(
     iterations: int = 1000,
     lr: float = 0.01,
     debug: bool = False,
+    mask_penalty: float = 10.0
 ) -> None:
     if img_path:
         gt_image = image_path_to_tensor(img_path)
@@ -283,7 +285,7 @@ def main(
     trainer = SimpleTrainer(
         gt_image=gt_image, mask_image=mask_image, num_points=num_points
     )
-    trainer.train(iterations=iterations, lr=lr, save_imgs=save_imgs, debug=debug)
+    trainer.train(iterations=iterations, lr=lr, save_imgs=save_imgs, debug=debug, mask_penalty=mask_penalty)
 
 
 if __name__ == "__main__":
