@@ -7,21 +7,22 @@ from typing import Optional
 import numpy as np
 import torch
 import tyro
-from gsplat.project_gaussians import project_gaussians
-from gsplat.rasterize import rasterize_gaussians
 from PIL import Image
 from torch import Tensor, optim
 from tqdm import tqdm
+
+from gsplat.project_gaussians import project_gaussians
+from gsplat.rasterize import rasterize_gaussians
 
 
 class SimpleTrainer:
     """Trains random gaussians to fit an image."""
 
     def __init__(
-        self,
-        gt_image: Tensor,
-        mask_image: Tensor,
-        num_points: int = 2000,
+            self,
+            gt_image: Tensor,
+            mask_image: Tensor,
+            num_points: int = 2000,
     ):
         self.device = torch.device("cuda:0")
         self.gt_image = gt_image.to(device=self.device)
@@ -49,10 +50,7 @@ class SimpleTrainer:
         # self.means[:, 2] = torch.ones(self.num_points) + 0.5
         # self.means[:, 2] = torch.FloatTensor(self.num_points).uniform_(0.9, 1.0)
 
-        # TODO: remove not in mask
-
         self.scales = torch.rand(self.num_points, 3, device=self.device)
-        self.scales = torch.ones(self.num_points, 3, device=self.device)
         d = 3
         self.rgbs = torch.rand(self.num_points, d, device=self.device)
 
@@ -93,13 +91,13 @@ class SimpleTrainer:
         self.viewmat.requires_grad = False
 
     def train(
-        self,
-        iterations: int = 1000,
-        lr: float = 0.01,
-        save_imgs: bool = False,
-        B_SIZE: int = 14,
-        debug: bool = False,
-        mask_penalty: float = 1.0
+            self,
+            iterations: int = 1000,
+            lr: float = 0.01,
+            save_imgs: bool = False,
+            B_SIZE: int = 14,
+            debug: bool = False,
+            mask_penalty: float = 1.0
     ):
         optimizer = optim.Adam(
             [self.rgbs, self.means, self.scales, self.opacities, self.quats], lr
@@ -160,7 +158,6 @@ class SimpleTrainer:
             mask_intersection[self.mask] = 0  # hardcoded background
             mask_loss = mse_loss(mask_intersection, self.background_image) * mask_penalty
 
-
             optimizer.zero_grad()
             start = time.time()
             loss = image_loss + mask_loss
@@ -168,10 +165,15 @@ class SimpleTrainer:
             torch.cuda.synchronize()
             times[2] += time.time() - start
             optimizer.step()
-            pbar.set_description(f"Loss: {image_loss.item():.8f} Mask loss: {mask_loss.item():.8f} Total loss: {loss.item():.8f}")
+            pbar.set_description(
+                f"Loss: {image_loss.item():.8f} Mask loss: {mask_loss.item():.8f} Total loss: {loss.item():.8f}")
 
             if debug or (save_imgs and iter % 100 == 0):
-                gaussian_points = xys.detach().cpu().numpy().astype(np.uint8)
+                gaussian_points = xys.detach().cpu().numpy()
+                gaussian_points[:, 0] = gaussian_points[:, 0] * (255 / self.W)
+                gaussian_points[:, 1] = gaussian_points[:, 1] * (255 / self.H)
+                gaussian_points = gaussian_points.astype(np.uint8)
+
                 frame = (out_img.detach().cpu().numpy() * 255).astype(np.uint8)
                 frame[gaussian_points[:, 0], gaussian_points[:, 1]] = [255, 0, 0]
                 frames.append(frame)
@@ -244,7 +246,7 @@ class SimpleTrainer:
             f"Total(s):\nProject: {times[0]:.3f}, Rasterize: {times[1]:.3f}, Backward: {times[2]:.3f}"
         )
         print(
-            f"Per step(s):\nProject: {times[0]/iterations:.5f}, Rasterize: {times[1]/iterations:.5f}, Backward: {times[2]/iterations:.5f}"
+            f"Per step(s):\nProject: {times[0] / iterations:.5f}, Rasterize: {times[1] / iterations:.5f}, Backward: {times[2] / iterations:.5f}"
         )
 
 
@@ -258,16 +260,16 @@ def image_path_to_tensor(image_path: Path):
 
 
 def main(
-    height: int = 256,
-    width: int = 256,
-    num_points: int = 100000,
-    save_imgs: bool = True,
-    img_path: Optional[Path] = None,
-    mask_path: Optional[Path] = None,
-    iterations: int = 1000,
-    lr: float = 0.01,
-    debug: bool = False,
-    mask_penalty: float = 10.0
+        height: int = 256,
+        width: int = 256,
+        num_points: int = 100000,
+        save_imgs: bool = True,
+        img_path: Optional[Path] = None,
+        mask_path: Optional[Path] = None,
+        iterations: int = 1000,
+        lr: float = 0.01,
+        debug: bool = False,
+        mask_penalty: float = 1.0
 ) -> None:
     if img_path:
         gt_image = image_path_to_tensor(img_path)
@@ -275,7 +277,7 @@ def main(
         gt_image = torch.ones((height, width, 3)) * 1.0
         # make top left and bottom right red, blue
         gt_image[: height // 2, : width // 2, :] = torch.tensor([1.0, 0.0, 0.0])
-        gt_image[height // 2 :, width // 2 :, :] = torch.tensor([0.0, 0.0, 1.0])
+        gt_image[height // 2:, width // 2:, :] = torch.tensor([0.0, 0.0, 1.0])
 
     if mask_path:
         mask_image = image_path_to_tensor(mask_path)
