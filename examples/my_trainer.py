@@ -166,7 +166,7 @@ class SimpleTrainer:
             times[2] += time.time() - start
             optimizer.step()
             pbar.set_description(
-                f"Loss: {image_loss.item():.8f} Mask loss: {mask_loss.item():.8f} Total loss: {loss.item():.8f}")
+                f"Image loss: {image_loss.item():.8f} Mask loss: {mask_loss.item():.8f} Total loss: {loss.item():.8f}")
 
             if debug or (save_imgs and iter % 100 == 0):
                 gaussian_points = xys.detach().cpu().numpy()
